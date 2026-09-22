@@ -1,0 +1,11 @@
+Print a shell completion script
+
+Usage: jev completions <SHELL>
+
+Arguments:
+  <SHELL>  Shell to generate a completion script for [possible values: bash, elvish, fish,
+           powershell, zsh]
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version

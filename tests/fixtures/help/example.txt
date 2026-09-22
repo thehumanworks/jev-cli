@@ -1,0 +1,8 @@
+Print an example questions document
+
+Usage: jev example [OPTIONS]
+
+Options:
+      --state    Print an example state instead of the questions document
+  -h, --help     Print help
+  -V, --version  Print version

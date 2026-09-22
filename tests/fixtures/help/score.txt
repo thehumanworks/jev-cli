@@ -1,0 +1,80 @@
+Ask one rating question
+
+Usage: jev score [OPTIONS] <INSTRUCTIONS> [LEVEL]...
+
+Arguments:
+  <INSTRUCTIONS>
+          What the model should rate
+
+  [LEVEL]...
+          Level description, low end of the scale first (2 to 10 levels). `--` must come after every
+          flag
+
+Options:
+      --id <ID>
+          Question id
+          
+          [default: q]
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+State:
+  -s, --state <TEXT>
+          State text
+
+  -f, --state-file <PATH>
+          Read the state from a file (`-` means stdin)
+
+      --state-json
+          Parse the state as a JSON object, array or string
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - text: Two-decimal blocks for `ask`, or one bare value for a single question
+          - json: The response document plus `cost_usd`
+          
+          [default: text]
+
+      --json
+          Shorthand for `--output json`
+
+  -v, --verbose
+          After a successful request, print model, tokens, retries and estimated cost on stderr
+
+      --debug
+          Print each failed attempt on stderr as it happens
+
+      --dry-run
+          Print the request JSON and do not send it. No API key is required
+
+Connection:
+      --api-key <KEY>
+          API key (`TYPESAFE_API_KEY`). Prefer the environment variable: flags are visible to other
+          processes
+
+      --base-url <URL>
+          API endpoint (`JEV_BASE_URL`)
+          
+          [default: https://api.typesafe.ai/v1/systemone]
+
+      --model <NAME>
+          Model name (`JEV_MODEL`)
+          
+          [default: jev-latest]
+
+      --timeout <SECONDS>
+          Per-request timeout in whole seconds (`JEV_TIMEOUT`), 1 to 86400. Also bounds connecting
+          
+          [default: 60]
+
+      --retries <N>
+          Extra attempts after the first for transient failures (`JEV_RETRIES`)
+          
+          [default: 8]

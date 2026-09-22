@@ -1,0 +1,78 @@
+[package]
+name = "jev"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+description = "Command-line client for TypeSafe's Jev model: calibrated yes/no, choice and score questions about a state"
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+keywords = ["cli", "typesafe", "jev", "classification", "probability"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "jev"
+path = "src/main.rs"
+
+[dependencies]
+typesafe-jev = "0.2"
+clap = { version = "4.5", features = ["derive", "wrap_help"] }
+clap_complete = "4.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+
+[dev-dependencies]
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Levels live here so `cargo clippy`, `scripts/check.sh` and the pre-commit hook share one
+# policy. CI passes `-D warnings`, so every `warn` fails the build. `pedantic` stays on because
+# this crate is small enough that the extra lints earn their keep. Panics, `unwrap`, `expect`,
+# `todo` and the print macros are denied: failures are typed, and every byte of output goes
+# through the writers `run` is given. The last block is the same bug-class deny list as
+# `typesafe-jev`, so float, slice and match mistakes the client crate rejects are rejected here too.
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+correctness = "deny"
+suspicious = "deny"
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+lossy_float_literal = "deny"
+string_slice = "deny"
+mem_forget = "deny"
+get_unwrap = "deny"
+undocumented_unsafe_blocks = "deny"
+empty_drop = "deny"
+infinite_loop = "deny"
+rest_pat_in_fully_bound_structs = "deny"
+deref_by_slicing = "deny"
+as_ptr_cast_mut = "deny"
+fn_to_numeric_cast_any = "deny"
+float_cmp_const = "deny"
+invalid_upcast_comparisons = "deny"
+large_stack_arrays = "deny"
+match_same_arms = "deny"
+match_wild_err_arm = "deny"
+option_option = "deny"
+range_minus_one = "deny"
+range_plus_one = "deny"
+same_functions_in_if_condition = "deny"

@@ -1,0 +1,34 @@
+Ask calibrated questions about a state with the Jev model
+
+Usage: jev <COMMAND>
+
+Commands:
+  ask          Ask one or more questions from a JSON questions document
+  noul         Ask one yes/no question
+  choice       Ask one multiple-choice question
+  score        Ask one rating question
+  example      Print an example questions document
+  completions  Print a shell completion script
+  help         Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+
+exit codes:
+  0  success (noul --threshold: the probability is at least P)
+  1  noul --threshold: the probability is below P
+  2  usage error (arguments, state, or questions document)
+  3  authentication: no API key, or the API rejected it
+  4  the API refused the request, or the configuration is unusable
+  5  the request exceeds the model's context
+  6  other API or network failure, including retries exhausted
+  7  local I/O failure (unreadable file or stdin)
+
+examples:
+  jev noul "Is this spam?" -s "You have won a prize"
+  jev noul "Is this spam?" -f mail.txt --threshold 0.8 && echo spam
+  jev choice "Which team?" billing=Payments technical=Bugs -f ticket.txt
+  jev score "How urgent?" "Not urgent" Urgent -s "Fix this today"
+  jev example | jev ask -q - -s "Please help ASAP"
+  jev ask -q questions.json -f ticket.txt --json

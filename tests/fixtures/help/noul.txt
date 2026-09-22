@@ -1,0 +1,85 @@
+Ask one yes/no question
+
+Usage: jev noul [OPTIONS] <INSTRUCTIONS>
+
+Arguments:
+  <INSTRUCTIONS>
+          The yes/no question
+
+Options:
+      --yes <MEANING>
+          What a yes (a probability near 1) means
+
+      --no <MEANING>
+          What a no (a probability near 0) means
+
+      --id <ID>
+          Question id
+          
+          [default: q]
+
+      --threshold <P>
+          Exit 0 when the yes-probability is at least P, otherwise exit 1. P is between 0 and 1
+
+  -h, --help
+          Print help (see a summary with '-h')
+
+  -V, --version
+          Print version
+
+State:
+  -s, --state <TEXT>
+          State text
+
+  -f, --state-file <PATH>
+          Read the state from a file (`-` means stdin)
+
+      --state-json
+          Parse the state as a JSON object, array or string
+
+Output:
+  -o, --output <FORMAT>
+          Output format
+
+          Possible values:
+          - text: Two-decimal blocks for `ask`, or one bare value for a single question
+          - json: The response document plus `cost_usd`
+          
+          [default: text]
+
+      --json
+          Shorthand for `--output json`
+
+  -v, --verbose
+          After a successful request, print model, tokens, retries and estimated cost on stderr
+
+      --debug
+          Print each failed attempt on stderr as it happens
+
+      --dry-run
+          Print the request JSON and do not send it. No API key is required
+
+Connection:
+      --api-key <KEY>
+          API key (`TYPESAFE_API_KEY`). Prefer the environment variable: flags are visible to other
+          processes
+
+      --base-url <URL>
+          API endpoint (`JEV_BASE_URL`)
+          
+          [default: https://api.typesafe.ai/v1/systemone]
+
+      --model <NAME>
+          Model name (`JEV_MODEL`)
+          
+          [default: jev-latest]
+
+      --timeout <SECONDS>
+          Per-request timeout in whole seconds (`JEV_TIMEOUT`), 1 to 86400. Also bounds connecting
+          
+          [default: 60]
+
+      --retries <N>
+          Extra attempts after the first for transient failures (`JEV_RETRIES`)
+          
+          [default: 8]
