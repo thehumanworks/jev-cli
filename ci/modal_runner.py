@@ -87,7 +87,6 @@ def github(path: str, token: str, body: dict) -> dict:
     timeout=JOB_TIMEOUT_SECONDS,
     cpu=4,
     memory=8192,
-    ephemeral_disk=20 * 1024,
 )
 def run_job(job_id: int, job_url: str) -> None:
     """Run exactly one queued job in this container, then exit."""
