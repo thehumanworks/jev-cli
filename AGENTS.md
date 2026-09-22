@@ -55,6 +55,13 @@ without calling the API.
 Test modules may `#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]` at the top
 of the module or integration-test file only.
 
+## CI runners
+
+CI runs on Modal when the `CI_RUNNER` repository variable is `modal` (`ci/modal_runner.py`,
+`ci/setup-modal-runner.sh`, `docs/ci-runners.md`), and on GitHub-hosted runners otherwise. The
+Rust version baked into the Modal image must match `rust-toolchain.toml`; redeploy with
+`modal deploy ci/modal_runner.py` after changing it.
+
 ## Commits
 
 Commit only when asked. Do not commit `mise.local.toml` or a secret.

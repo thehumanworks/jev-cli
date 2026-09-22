@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,7 +15,9 @@ concurrency:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    # Repository variable CI_RUNNER selects the runner: `modal` for the Modal runners in
+    # ci/modal_runner.py (docs/ci-runners.md), unset for GitHub-hosted runners.
+    runs-on: ${{ vars.CI_RUNNER || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
