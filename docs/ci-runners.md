@@ -1,7 +1,7 @@
 # CI runners on Modal
 
-CI (`.github/workflows/ci.yml`) runs `scripts/check.sh` on a runner chosen by the `CI_RUNNER`
-repository variable:
+CI (`.github/workflows/ci.yml`) runs `scripts/check.sh` and the x86_64 Linux release build on a
+runner chosen by the `CI_RUNNER` repository variable:
 
 | `CI_RUNNER` | Runner |
 | --- | --- |
@@ -16,14 +16,18 @@ workflow itself does not change.
 1. GitHub posts a `workflow_job` webhook to the `webhook` endpoint of the Modal app
    `jev-ci-runner` every time a job changes state.
 2. For a `queued` job whose labels include `modal`, the endpoint spawns `run_job`: a fresh
-   container with the Actions runner, git, a C toolchain and Rust 1.98.1 (with clippy and rustfmt)
-   baked into the image.
+   container with the Actions runner, git, a C toolchain, musl-tools and Rust 1.98.1 (with clippy,
+   rustfmt and the `x86_64-unknown-linux-musl` target) baked into the image.
 3. The container asks GitHub for a single-use just-in-time runner registration, starts the runner
    with it, runs that one job, and exits. Nothing is shared between jobs, and no runner is
    registered while idle.
 
 Each container gets 4 CPUs, 8 GiB of memory and 40 minutes. The job's own `timeout-minutes` in
 the workflow is shorter and is what normally applies.
+
+The aarch64 Linux and macOS builds always run on GitHub-hosted runners (`ubuntu-24.04-arm`,
+`macos-latest`); Modal has no arm64 or macOS containers. The release job runs on
+`ubuntu-latest` because it needs `gh`.
 
 ## Setup
 

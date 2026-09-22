@@ -13,6 +13,20 @@ script. There is no colour and no spinner.
 
 ## Install
 
+Prebuilt binaries for Linux (x86_64, aarch64; static, musl) and macOS (arm64, x86_64) are
+attached to each [GitHub release](https://github.com/thehumanworks/jev-cli/releases). Each
+archive has a `.sha256` beside it.
+
+```bash
+target=aarch64-apple-darwin   # or x86_64-apple-darwin, x86_64-unknown-linux-musl, aarch64-unknown-linux-musl
+version=v0.1.0
+curl -fsSLO "https://github.com/thehumanworks/jev-cli/releases/download/$version/jev-$version-$target.tar.gz"
+tar -xzf "jev-$version-$target.tar.gz"
+install "jev-$version-$target/jev" ~/.local/bin/
+```
+
+From source:
+
 ```bash
 cargo install --path .
 ```

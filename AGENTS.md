@@ -62,6 +62,13 @@ CI runs on Modal when the `CI_RUNNER` repository variable is `modal` (`ci/modal_
 Rust version baked into the Modal image must match `rust-toolchain.toml`; redeploy with
 `modal deploy ci/modal_runner.py` after changing it.
 
+## Releases
+
+CI builds release archives for four targets on every run (`scripts/package.sh`, uploaded as
+workflow artifacts). To publish: set `version` in `Cargo.toml`, give that version a dated section
+in `CHANGELOG.md`, commit, then push a tag `v<version>`. The `release` job fails if the tag and
+`Cargo.toml` disagree, and uses the CHANGELOG section as the release notes. Tag only when asked.
+
 ## Commits
 
 Commit only when asked. Do not commit `mise.local.toml` or a secret.

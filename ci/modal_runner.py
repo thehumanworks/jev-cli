@@ -41,16 +41,19 @@ runner_tarball = (
 )
 
 # Everything a job needs is baked in, so a cold container starts a job in seconds:
-# the Actions runner, git, a C toolchain for build scripts, and the pinned Rust toolchain
-# that `rust-toolchain.toml` and `.github/workflows/ci.yml` name.
+# the Actions runner, git, a C toolchain for build scripts, musl for the static Linux release
+# build, and the pinned Rust toolchain that `rust-toolchain.toml` and `.github/workflows/ci.yml`
+# name.
 runner_image = (
     modal.Image.debian_slim(python_version="3.12")
-    .apt_install("curl", "git", "ca-certificates", "build-essential", "pkg-config", "tar", "gzip")
+    .apt_install(
+        "curl", "git", "ca-certificates", "build-essential", "musl-tools", "pkg-config", "tar", "gzip"
+    )
     .run_commands(
         f"mkdir -p /runner && curl -fsSL {runner_tarball} | tar -xz -C /runner",
         "/runner/bin/installdependencies.sh",
         "curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal "
-        f"--default-toolchain {RUST_VERSION} -c clippy -c rustfmt",
+        f"--default-toolchain {RUST_VERSION} -c clippy -c rustfmt -t x86_64-unknown-linux-musl",
     )
     .env(
         {

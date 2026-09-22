@@ -2,3 +2,4 @@
 .env.keys
 mise.local.toml
 mise.local.lock
+/dist

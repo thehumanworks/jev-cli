@@ -3,6 +3,7 @@ name: ci
 on:
   push:
     branches: [main]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -27,3 +28,100 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Quality gate
         run: scripts/check.sh
+
+  build:
+    # Release binaries for every target, saved as workflow artifacts. Linux builds link musl
+    # statically so one binary runs on any distribution. x86_64 Linux uses the same runner as
+    # `check`; the Modal image has musl-tools baked in. The Intel macOS build is cross-compiled
+    # on the arm64 runner and is not run.
+    name: build (${{ matrix.target }})
+    needs: check
+    runs-on: ${{ matrix.runner || vars.CI_RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            run: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            run: true
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            run: true
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            run: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.98.1
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install musl-tools
+        if: contains(matrix.target, 'musl')
+        run: command -v musl-gcc || (sudo apt-get update && sudo apt-get install -y musl-tools)
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Smoke test
+        if: matrix.run
+        run: target/${{ matrix.target }}/release/jev --version
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          if [[ $GITHUB_REF == refs/tags/v* ]]; then
+            version=$GITHUB_REF_NAME
+          else
+            version=${GITHUB_SHA::7}
+          fi
+          scripts/package.sh ${{ matrix.target }} "$version"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jev-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  release:
+    # A pushed tag `vX.Y.Z` publishes a GitHub release with every build attached. The tag must
+    # match the version in Cargo.toml, and the notes are that version's CHANGELOG.md section.
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Check tag against Cargo.toml
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          if [[ $GITHUB_REF_NAME != "v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match Cargo.toml version $version" >&2
+            exit 1
+          fi
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+      - name: Release notes
+        run: |
+          awk -v v="$VERSION" '
+            $0 ~ "^## \\[" v "\\]" { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > notes.md
+          if [[ ! -s notes.md ]]; then
+            echo "CHANGELOG.md has no section for $VERSION" >&2
+            exit 1
+          fi
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/* \
+            --title "jev $VERSION" --notes-file notes.md --verify-tag

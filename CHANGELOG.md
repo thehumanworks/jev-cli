@@ -20,3 +20,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--timeout` and `JEV_TIMEOUT` must be from 1 to 86400 seconds.
 - A questions document with a repeated id is rejected. A leading UTF-8 BOM on the state or the
   document is ignored.
+- Release binaries for Linux (x86_64 and aarch64, statically linked with musl) and macOS (arm64
+  and x86_64), attached to the GitHub release as `.tar.gz` archives with SHA-256 checksums.
