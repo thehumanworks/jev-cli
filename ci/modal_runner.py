@@ -62,6 +62,8 @@ runner_image = (
 )
 
 webhook_image = modal.Image.debian_slim(python_version="3.12").pip_install("fastapi[standard]")
+with webhook_image.imports():
+    from fastapi import HTTPException, Request
 
 
 def github(path: str, token: str, body: dict) -> dict:
@@ -106,10 +108,8 @@ def run_job(job_id: int, job_url: str) -> None:
 
 @app.function(image=webhook_image, secrets=[secret])
 @modal.fastapi_endpoint(method="POST")
-async def webhook(request) -> dict:
+async def webhook(request: "Request") -> dict:
     """Receive GitHub's `workflow_job` events and spawn one runner per queued job."""
-    from fastapi import HTTPException
-
     body = await request.body()
     expected = "sha256=" + hmac.new(os.environ["WEBHOOK_SECRET"].encode(), body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, request.headers.get("X-Hub-Signature-256", "")):
