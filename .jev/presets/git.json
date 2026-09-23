@@ -1,0 +1,115 @@
+{
+  "questions": {
+    "command": {
+      "type": "choice",
+      "instructions": "What does the person want to do in their git repository?",
+      "criteria": {
+        "status": "See where things stand: the current branch, and which files are modified, staged or untracked",
+        "diff": "See the uncommitted changes themselves, line by line",
+        "log": "See the recent commit history",
+        "show": "See one commit in detail: its message and what it changed",
+        "compare": "See how one branch differs from another: the commits and files that are only on one of them",
+        "branches": "List the branches",
+        "stash_list": "List the changes that were put aside with stash",
+        "fetch": "Download what is new on the remote without changing any local branch",
+        "stage": "Stage changes for the next commit, without committing yet",
+        "unstage": "Take changes out of the staging area, keeping the changes in the files",
+        "commit": "Record the changes as a new commit",
+        "stash": "Put uncommitted changes aside, to get a clean working tree",
+        "unstash": "Bring back changes that were put aside with stash",
+        "switch": "Switch the current checkout to another branch that already exists",
+        "create_branch": "Start a new branch",
+        "delete_branch": "Delete a branch whose work is already merged",
+        "merge": "Bring another branch's commits into the current branch",
+        "pull": "Update the current branch with the new commits on its remote",
+        "push": "Upload the current branch's new commits to the remote",
+        "worktree_list": "List the worktrees: the other directories where this repository is checked out, and their branches",
+        "worktree_add": "Create a worktree: check out a branch, new or existing, in a directory of its own",
+        "worktree_path": "Find the directory of one worktree, for example to go to it",
+        "worktree_remove": "Remove a worktree whose work is finished",
+        "worktree_prune": "Clean up worktrees whose directories were already deleted by hand",
+        "help": "Asks what this can do, or how to use it",
+        "unsupported": "Some other git operation, such as rebase, reset, cherry-pick, revert, tags, remotes or submodules"
+      }
+    },
+    "destructive": {
+      "type": "noul",
+      "instructions": "The request asks to throw away work or history: discard uncommitted changes, reset hard, clean untracked files, force-push, force-delete an unmerged branch, drop a stash, or force-remove a worktree that has changes"
+    },
+    "all_changes": {
+      "type": "noul",
+      "instructions": "The request wants every change included, including unstaged and untracked files, rather than only what is staged or only named files"
+    },
+    "staged": {
+      "type": "noul",
+      "instructions": "The request is only about the changes already staged for the next commit"
+    }
+  },
+  "rules": [
+    { "when": { "destructive": { "at_least": 0.5 } }, "then": "refuse" },
+    {
+      "when": { "command": { "is": "commit", "confidence_at_least": 0.7 }, "all_changes": { "at_least": 0.5 } },
+      "then": "commit_all"
+    },
+    {
+      "when": { "command": { "is": "stage", "confidence_at_least": 0.7 }, "all_changes": { "at_least": 0.5 } },
+      "then": "stage_all"
+    },
+    {
+      "when": { "command": { "is": "stash", "confidence_at_least": 0.7 }, "all_changes": { "at_least": 0.5 } },
+      "then": "stash_all"
+    },
+    {
+      "when": { "command": { "is": "diff", "confidence_at_least": 0.5 }, "staged": { "at_least": 0.5 } },
+      "then": "diff_staged"
+    },
+    {
+      "when": {
+        "command": {
+          "in": [
+            "status", "diff", "log", "show", "compare", "branches", "stash_list", "fetch",
+            "worktree_list", "worktree_path", "help", "unsupported"
+          ],
+          "confidence_at_least": 0.5
+        }
+      },
+      "then": { "from": "command" }
+    },
+    { "when": { "command": { "confidence_at_least": 0.7 } }, "then": { "from": "command" } }
+  ],
+  "fallback": "unsure",
+  "actions": {
+    "status": { "run": ["git", "status"] },
+    "diff": { "run": ["git/run.sh", "diff"] },
+    "diff_staged": { "run": ["git/run.sh", "diff", "--staged"] },
+    "log": { "run": ["git/run.sh", "log"] },
+    "show": { "run": ["git/run.sh", "show"] },
+    "compare": { "run": ["git/run.sh", "compare"] },
+    "branches": { "run": ["git", "branch", "-vv"] },
+    "stash_list": { "run": ["git", "stash", "list"] },
+    "fetch": { "run": ["git", "fetch", "--all", "--prune"] },
+    "stage": { "run": ["git/run.sh", "stage"] },
+    "stage_all": { "run": ["git/run.sh", "stage", "--all"] },
+    "unstage": { "run": ["git/run.sh", "unstage"] },
+    "commit": { "run": ["git/run.sh", "commit"] },
+    "commit_all": { "run": ["git/run.sh", "commit", "--all"] },
+    "stash": { "run": ["git/run.sh", "stash"] },
+    "stash_all": { "run": ["git/run.sh", "stash", "--all"] },
+    "unstash": { "run": ["git/run.sh", "unstash"] },
+    "switch": { "run": ["git/run.sh", "switch"] },
+    "create_branch": { "run": ["git/run.sh", "create_branch"] },
+    "delete_branch": { "run": ["git/run.sh", "delete_branch"] },
+    "merge": { "run": ["git/run.sh", "merge"] },
+    "pull": { "run": ["git", "pull", "--ff-only"] },
+    "push": { "run": ["git/run.sh", "push"] },
+    "worktree_list": { "run": ["git", "worktree", "list"] },
+    "worktree_add": { "run": ["git/run.sh", "worktree_add"] },
+    "worktree_path": { "run": ["git/run.sh", "worktree_path"] },
+    "worktree_remove": { "run": ["git/run.sh", "worktree_remove"] },
+    "worktree_prune": { "run": ["git", "worktree", "prune", "--verbose"] },
+    "help": { "run": ["git/run.sh", "help"] },
+    "unsupported": { "run": ["git/run.sh", "unsupported"] },
+    "refuse": { "run": ["git/run.sh", "refuse"] },
+    "unsure": { "run": ["git/run.sh", "unsure"] }
+  }
+}

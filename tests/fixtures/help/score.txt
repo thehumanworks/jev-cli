@@ -37,8 +37,9 @@ Output:
           Output format
 
           Possible values:
-          - text: Two-decimal blocks for `ask`, or one bare value for a single question
-          - json: The response document plus `cost_usd`
+          - text: Two-decimal blocks for `ask`, one bare value for a single question, the action
+            name for `decide`, and the action's own output for `call`
+          - json: The response document plus `cost_usd`. `decide` and `call` put the decision first
           
           [default: text]
 

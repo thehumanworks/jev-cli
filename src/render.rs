@@ -4,15 +4,19 @@
 //! were asked. The single-question commands print one bare value at full precision so a shell can
 //! capture it. JSON is the crate's `Response` plus `cost_usd`, pretty-printed, and is the same
 //! shape for every command. Choice lines follow the order the API returned; score levels run from
-//! low to high. A level whose description is JSON is printed as compact JSON.
+//! low to high. A level whose description is JSON is printed as compact JSON. `decide` prints the
+//! action name, and its JSON puts the decision before the response keys. `--explain` is for a
+//! person, on stderr.
 
 use std::fmt::Write as _;
 
 use serde::Serialize;
-use serde_json::{Number, Value};
+use serde_json::{Map, Number, Value};
 use typesafe_jev::{Answer, Content, Question, Questions, Response};
 
+use crate::decide::{ConditionCheck, Decision, Observed, RuleCheck, closest_call};
 use crate::exit::Failure;
+use crate::preset::{Preset, Test};
 use crate::state::State;
 
 /// Pretty JSON with a trailing newline.
@@ -37,14 +41,125 @@ struct RequestBody<'a> {
 
 /// `Response` as the crate serializes it, then `cost_usd` from [`typesafe_jev::Usage::cost_usd`].
 pub(crate) fn render_response(response: &Response, cost_usd: f64) -> Result<String, Failure> {
-    let mut value =
+    pretty(&Value::Object(response_object(response, cost_usd)?))
+}
+
+/// The `decide --json` document: `decision`, `rule`, `rules`, then the keys of [`render_response`].
+pub(crate) fn decision_document(
+    decision: &Decision<'_>,
+    response: &Response,
+    cost_usd: f64,
+) -> Result<Map<String, Value>, Failure> {
+    let mut document = Map::new();
+    document.insert("decision".to_owned(), decision.action.clone().map_or(Value::Null, Value::String));
+    document.insert("rule".to_owned(), decision.rule.map_or(Value::Null, Value::from));
+    let rules = decision.rules.iter().map(rule_value).collect();
+    document.insert("rules".to_owned(), Value::Array(rules));
+    document.extend(response_object(response, cost_usd)?);
+    Ok(document)
+}
+
+fn response_object(response: &Response, cost_usd: f64) -> Result<Map<String, Value>, Failure> {
+    let value =
         serde_json::to_value(response).map_err(|err| Failure::Api(format!("cannot format the response: {err}")))?;
-    let Some(object) = value.as_object_mut() else {
+    let Value::Object(mut object) = value else {
         return Err(Failure::Api("cannot format the response".into()));
     };
     let number = Number::from_f64(cost_usd).unwrap_or_else(|| Number::from(0));
     object.insert("cost_usd".to_owned(), Value::Number(number));
-    pretty(&value)
+    Ok(object)
+}
+
+fn rule_value(rule: &RuleCheck<'_>) -> Value {
+    let conditions = rule.conditions.iter().map(condition_value).collect();
+    let mut object = Map::new();
+    object.insert("matched".to_owned(), Value::Bool(rule.matched));
+    object.insert("conditions".to_owned(), Value::Array(conditions));
+    Value::Object(object)
+}
+
+/// `question`, `test`, then `threshold`, `option` or `options`, then `value`, `met`, `margin`. A
+/// non-finite number is `null`.
+fn condition_value(checked: &ConditionCheck<'_>) -> Value {
+    let condition = checked.condition;
+    let mut object = Map::new();
+    object.insert("question".to_owned(), Value::String(condition.question.clone()));
+    object.insert("test".to_owned(), Value::String(condition.test.key().to_owned()));
+    let (key, expected) = match &condition.test {
+        Test::AtLeast(threshold) | Test::Below(threshold) | Test::ConfidenceAtLeast(threshold) => {
+            ("threshold", Value::from(*threshold))
+        }
+        Test::Is(option) => ("option", Value::String(option.clone())),
+        Test::In(options) => ("options", Value::from(options.clone())),
+    };
+    object.insert(key.to_owned(), expected);
+    let value = match &checked.value {
+        Observed::Number(number) => Value::from(*number),
+        Observed::Option(option) => Value::String(option.clone()),
+    };
+    object.insert("value".to_owned(), value);
+    object.insert("met".to_owned(), Value::Bool(checked.met));
+    object.insert("margin".to_owned(), Value::from(checked.margin));
+    Value::Object(object)
+}
+
+/// The `--explain` block for stderr: the decision, each rule with its values and margins, the
+/// closest call, a blank line, then the answers in `ask`'s text format.
+pub(crate) fn render_explain(preset: &Preset, decision: &Decision<'_>, response: &Response) -> Result<String, Failure> {
+    let mut out = String::new();
+    let _ = match (&decision.action, decision.rule) {
+        (Some(action), Some(rule)) => writeln!(out, "decision: {action} (rule {rule})"),
+        (Some(action), None) => writeln!(out, "decision: {action} (fallback)"),
+        (None, _) => writeln!(out, "decision: none (no rule matched and there is no fallback)"),
+    };
+    let lines: Vec<Vec<String>> =
+        decision.rules.iter().map(|rule| rule.conditions.iter().map(condition_text).collect()).collect();
+    let label_width = format!("rule {}", decision.rules.len()).len();
+    let text_width = lines.iter().flatten().map(String::len).max().unwrap_or(0);
+    for (index, (rule, texts)) in decision.rules.iter().zip(&lines).enumerate() {
+        let label = format!("rule {}", index + 1);
+        let verdict = if rule.matched { "yes" } else { "no" };
+        if texts.is_empty() {
+            let _ = writeln!(out, "{label:<label_width$}  {verdict:<3}  always");
+        }
+        for (position, (checked, text)) in rule.conditions.iter().zip(texts).enumerate() {
+            let (label, verdict) = if position == 0 { (label.as_str(), verdict) } else { ("", "") };
+            let _ = writeln!(
+                out,
+                "{label:<label_width$}  {verdict:<3}  {text:<text_width$}  margin {:+.2}",
+                checked.margin
+            );
+        }
+    }
+    if let Some((rule, checked)) = closest_call(decision) {
+        let _ = writeln!(out, "closest call: rule {rule}, {} ({:+.2})", subject(checked), checked.margin);
+    }
+    out.push('\n');
+    out.push_str(&render_ask_text(&preset.questions, response)?);
+    Ok(out)
+}
+
+fn condition_text(checked: &ConditionCheck<'_>) -> String {
+    let id = &checked.condition.question;
+    let value = match &checked.value {
+        Observed::Number(number) => format!("{number:.2}"),
+        Observed::Option(option) => option.clone(),
+    };
+    match &checked.condition.test {
+        Test::AtLeast(threshold) => format!("{id} {value} at_least {threshold:.2}"),
+        Test::Below(threshold) => format!("{id} {value} below {threshold:.2}"),
+        Test::ConfidenceAtLeast(threshold) => format!("{id} confidence {value} at_least {threshold:.2}"),
+        Test::Is(option) => format!("{id} {value} is {option}"),
+        Test::In(options) => format!("{id} {value} in [{}]", options.join(", ")),
+    }
+}
+
+fn subject(checked: &ConditionCheck<'_>) -> String {
+    let id = &checked.condition.question;
+    match checked.condition.test {
+        Test::ConfidenceAtLeast(_) => format!("{id} confidence"),
+        Test::AtLeast(_) | Test::Below(_) | Test::Is(_) | Test::In(_) => id.clone(),
+    }
 }
 
 /// Human-readable `ask` output, one block per question, in question order.
@@ -133,7 +248,8 @@ fn mismatch(response: &Response, id: &str, expected: &str) -> String {
     }
 }
 
-fn answer_kind(answer: &Answer) -> &'static str {
+/// `a noul`, `a choice` or `a score`, for messages.
+pub(crate) fn answer_kind(answer: &Answer) -> &'static str {
     match answer {
         Answer::Noul(_) => "a noul",
         Answer::Choice(_) => "a choice",

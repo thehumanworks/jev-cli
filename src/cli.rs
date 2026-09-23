@@ -21,13 +21,14 @@ const MAX_TIMEOUT_SECS: u64 = 86_400;
 const AFTER_HELP: &str = "\
 exit codes:
   0  success (noul --threshold: the probability is at least P)
-  1  noul --threshold: the probability is below P
-  2  usage error (arguments, state, or questions document)
+  1  noul --threshold: the probability is below P; decide: no rule matched and there is no fallback
+  2  usage error (arguments, state, questions document, or preset)
   3  authentication: no API key, or the API rejected it
   4  the API refused the request, or the configuration is unusable
   5  the request exceeds the model's context
   6  other API or network failure, including retries exhausted
-  7  local I/O failure (unreadable file or stdin)
+  7  local I/O failure (unreadable file or stdin, or an action that cannot be started)
+  once call has started the action, the status is the action's (128 + N if signal N killed it)
 
 examples:
   jev noul \"Is this spam?\" -s \"You have won a prize\"
@@ -36,6 +37,9 @@ examples:
   jev score \"How urgent?\" \"Not urgent\" Urgent -s \"Fix this today\"
   jev example | jev ask -q - -s \"Please help ASAP\"
   jev ask -q questions.json -f ticket.txt --json
+  mkdir -p .jev/presets && jev example --preset > .jev/presets/support.json
+  jev decide support -f ticket.txt --explain
+  jev call support -f ticket.txt
 ";
 
 /// Ask calibrated questions about a state with the Jev model.
@@ -112,10 +116,11 @@ fn is_command_line(matches: &ArgMatches, id: &str) -> bool {
 /// `text` or `json`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub(crate) enum OutputFormat {
-    /// Two-decimal blocks for `ask`, or one bare value for a single question.
+    /// Two-decimal blocks for `ask`, one bare value for a single question, the action name for
+    /// `decide`, and the action's own output for `call`.
     #[default]
     Text,
-    /// The response document plus `cost_usd`.
+    /// The response document plus `cost_usd`. `decide` and `call` put the decision first.
     Json,
 }
 
@@ -134,6 +139,12 @@ pub(crate) enum Command {
     /// Ask one rating question
     #[command(args_override_self = true)]
     Score(ScoreArgs),
+    /// Decide which action a preset chooses for a state, and run nothing
+    #[command(args_override_self = true)]
+    Decide(PresetArgs),
+    /// Decide with a preset, then run the chosen action with the state on its stdin
+    #[command(args_override_self = true)]
+    Call(PresetArgs),
     /// Print an example questions document
     Example(ExampleArgs),
     /// Print a shell completion script
@@ -207,12 +218,28 @@ pub(crate) struct ScoreArgs {
     pub common: CommonArgs,
 }
 
+/// `jev decide` and `jev call`.
+#[derive(Args)]
+pub(crate) struct PresetArgs {
+    /// A preset file, a name looked up in .jev/presets then ~/.config/jev/presets, or `-` for stdin
+    #[arg(value_name = "PRESET")]
+    pub preset: String,
+    /// Print every rule with its values and margins, then the answers, on stderr
+    #[arg(long = "explain", help_heading = "Output")]
+    pub explain: bool,
+    #[command(flatten)]
+    pub common: CommonArgs,
+}
+
 /// `jev example`.
 #[derive(Args)]
 pub(crate) struct ExampleArgs {
     /// Print an example state instead of the questions document
-    #[arg(long)]
+    #[arg(long, conflicts_with = "preset")]
     pub state: bool,
+    /// Print an example preset for `decide` and `call` instead of the questions document
+    #[arg(long)]
+    pub preset: bool,
 }
 
 /// `jev completions`.
@@ -300,6 +327,7 @@ pub(crate) fn common_mut(command: &mut Command) -> Option<&mut CommonArgs> {
         Command::Noul(args) => Some(&mut args.common),
         Command::Choice(args) => Some(&mut args.common),
         Command::Score(args) => Some(&mut args.common),
+        Command::Decide(args) | Command::Call(args) => Some(&mut args.common),
         Command::Example(_) | Command::Completions(_) => None,
     }
 }
@@ -355,7 +383,8 @@ pub(crate) fn output_format(common: &CommonArgs, explicit: Explicit) -> Result<O
     }
 }
 
-fn env_value(env: Option<&BTreeMap<String, String>>, name: &str) -> Option<String> {
+/// The variable from `env`, or from the process when `env` is `None`. An empty value is `None`.
+pub(crate) fn env_value(env: Option<&BTreeMap<String, String>>, name: &str) -> Option<String> {
     let value = match env {
         Some(map) => map.get(name).cloned(),
         None => std::env::var(name).ok(),

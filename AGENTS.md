@@ -28,7 +28,7 @@ Regenerate after a help change:
 cargo build --bin jev
 bin=target/debug/jev
 $bin --help > tests/fixtures/help/jev.txt
-for c in ask noul choice score example completions; do
+for c in ask noul choice score decide call example completions; do
   $bin "$c" --help > "tests/fixtures/help/$c.txt"
 done
 ```
@@ -47,6 +47,10 @@ No test touches the network. In-process tests call `jev::run` with an injected
 `typesafe_jev::Transport` and an `Io.env` map, so they never see the developer's
 `TYPESAFE_API_KEY`. An injected transport sets `backoff_scale` to 0. Binary tests that need HTTP
 use the fake server in `tests/common/mod.rs` on `127.0.0.1:0`.
+
+`tests/git_preset.rs` runs `.jev/presets/git/run.sh` against temporary repositories, so it needs
+`git` and `bash` on `PATH` and is unix-only. Its remote is a bare repository beside the test
+repository, and it reads no git configuration of the developer's.
 
 `tests/live.rs` is `#[ignore]`. It spends credits and sends a short state to TypeSafe. Run
 `cargo test --test live -- --ignored` only when asked. If `TYPESAFE_API_KEY` is unset it returns

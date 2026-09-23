@@ -12,25 +12,32 @@ use std::time::Duration;
 
 use clap::error::ErrorKind;
 use clap_complete::generate;
+use serde_json::Value;
 use typesafe_jev::{Client, Config, Response, Transport};
 
+use crate::call;
 use crate::cli::{
-    AskArgs, ChoiceArgs, Command, CommonArgs, Explicit, NoulArgs, OutputFormat, Parsed, ScoreArgs, apply_env, command,
-    common_mut, output_format, parse,
+    AskArgs, ChoiceArgs, Command, CommonArgs, ExampleArgs, Explicit, NoulArgs, OutputFormat, Parsed, PresetArgs,
+    ScoreArgs, apply_env, command, common_mut, output_format, parse,
 };
+use crate::decide::decide;
 use crate::exit::{Failure, one_line};
+use crate::preset::{Source, example_preset, locate, parse_preset};
 use crate::questions::{
     MISSING_QUESTIONS, check_threshold, example_questions, into_choice, noul_question, one, parse_options,
     questions_from_json, score_question,
 };
 use crate::render::{
-    pretty, render_ask_text, render_choice_text, render_noul_text, render_request, render_response, render_score_text,
-    required_noul, verbose_line,
+    decision_document, pretty, render_ask_text, render_choice_text, render_explain, render_noul_text, render_request,
+    render_response, render_score_text, required_noul, verbose_line,
 };
-use crate::state::{EXAMPLE_STATE, Origin, State, TERMINAL_STATE, interpret_state, read_origin};
+use crate::state::{EXAMPLE_STATE, Origin, State, TERMINAL_STATE, interpret_state, read_origin, strip_bom};
 
 /// State and questions were both aimed at stdin.
 const BOTH_STDIN: &str = "state and questions cannot both be read from stdin";
+
+/// State and preset were both aimed at stdin.
+const BOTH_STDIN_PRESET: &str = "state and preset cannot both be read from stdin";
 
 /// No key was passed and none was in the environment.
 const NO_API_KEY: &str = "no API key; pass --api-key or set TYPESAFE_API_KEY";
@@ -51,7 +58,9 @@ pub struct Io<I, O, E> {
     pub stderr: Arc<Mutex<E>>,
     /// When true, and neither `--state` nor `--state-file` was given, reading stdin is a usage error.
     pub stdin_is_terminal: bool,
-    /// Environment for `TYPESAFE_API_KEY`, `JEV_BASE_URL`, `JEV_MODEL`, `JEV_TIMEOUT` and `JEV_RETRIES`.
+    /// Environment for `TYPESAFE_API_KEY`, `JEV_BASE_URL`, `JEV_MODEL`, `JEV_TIMEOUT`, `JEV_RETRIES`, and
+    /// `XDG_CONFIG_HOME` and `HOME` for finding a preset by name. `Some` is also the whole environment
+    /// of an action that `call` runs, plus `JEV_PRESET`, `JEV_ACTION` and `JEV_DECISION`.
     pub env: Option<BTreeMap<String, String>>,
 }
 
@@ -127,12 +136,14 @@ fn execute_inner<I: Read, O: Write, E: Write + Send + 'static>(
         apply_env(common, explicit, io.env.as_ref())?;
     }
     match parsed.command {
-        Command::Example(args) => print_example(&mut io.stdout, args.state),
+        Command::Example(args) => print_example(&mut io.stdout, &args),
         Command::Completions(args) => print_completions(&mut io.stdout, args.shell),
         Command::Ask(args) => run_ask(io, &args, explicit, transport),
         Command::Noul(args) => run_noul(io, &args, explicit, transport),
         Command::Choice(args) => run_choice(io, &args, explicit, transport),
         Command::Score(args) => run_score(io, &args, explicit, transport),
+        Command::Decide(args) => run_preset(io, &args, explicit, transport, false),
+        Command::Call(args) => run_preset(io, &args, explicit, transport, true),
     }
 }
 
@@ -202,6 +213,103 @@ fn run_score<I: Read, O: Write, E: Write + Send + 'static>(
     let questions = one(&args.id, question)?;
     let state = load_state(&args.common, &mut io.stdin, io.stdin_is_terminal)?;
     present(io, &args.common, explicit, transport, &state, &questions, &Mode::Score { id: &args.id })
+}
+
+/// `decide`, or with `call` set, `call`. The preset is read and checked, `call`'s extra checks
+/// included, before the state is read and before any request.
+fn run_preset<I: Read, O: Write, E: Write + Send + 'static>(
+    io: &mut Io<I, O, E>,
+    args: &PresetArgs,
+    explicit: Explicit,
+    transport: Option<Box<dyn Transport>>,
+    call: bool,
+) -> Result<u8, Failure> {
+    let format = output_format(&args.common, explicit)?;
+    let source = locate(&args.preset, std::env::current_dir, io.env.as_ref())?;
+    if state_uses_stdin(&args.common) && matches!(source, Source::Stdin) {
+        return Err(Failure::Usage(BOTH_STDIN_PRESET.into()));
+    }
+    let origin = match &source {
+        Source::Stdin => Origin::Stdin,
+        Source::File(path) => Origin::File(path),
+    };
+    let text = read_origin(&origin, "preset", &mut io.stdin)?;
+    let label = source.label();
+    let named = |failure: Failure| Failure::Usage(format!("preset {label}: {}", failure.message()));
+    let preset = parse_preset(&text).map_err(named)?;
+    if call {
+        preset.check_callable().map_err(named)?;
+    }
+    let raw = read_state(&args.common, &mut io.stdin, io.stdin_is_terminal)?;
+    let state = interpret_state(&raw, args.common.state_json)?;
+    let conn = connection_from(&args.common);
+    if args.common.dry_run {
+        let body = render_request(&conn.model, &state, &preset.questions)?;
+        write_stdout(&mut io.stdout, &body)?;
+        return Ok(0);
+    }
+    let asked = send(&io.stderr, &conn, &args.common, &state, &preset.questions, transport)?;
+    let decision = decide(&preset, &asked.response)?;
+    let mut document = decision_document(&decision, &asked.response, asked.cost_usd)?;
+    if args.explain {
+        write_quiet(&io.stderr, &render_explain(&preset, &decision, &asked.response)?);
+    }
+    if !call {
+        let text = match (format, &decision.action) {
+            (OutputFormat::Json, _) => pretty(&Value::Object(document))?,
+            (OutputFormat::Text, Some(action)) => format!("{action}\n"),
+            (OutputFormat::Text, None) => String::new(),
+        };
+        write_stdout(&mut io.stdout, &text)?;
+        if let Some(line) = &asked.verbose {
+            write_quiet(&io.stderr, line);
+        }
+        return Ok(u8::from(decision.action.is_none()));
+    }
+    if let Some(line) = &asked.verbose {
+        write_quiet(&io.stderr, line);
+    }
+    // `check_callable` made these hold: there is a fallback, and every action has a program.
+    let name = decision.action.as_deref().ok_or_else(|| Failure::Usage("call needs a fallback action".into()))?;
+    let Some((program, rest)) =
+        preset.action(name).and_then(|action| action.run.as_deref()).and_then(<[_]>::split_first)
+    else {
+        return Err(Failure::Usage(format!("call needs a run for every action, and `{name}` has none")));
+    };
+    let compact =
+        serde_json::to_string(&document).map_err(|err| Failure::Api(format!("cannot format the decision: {err}")))?;
+    let action = call::Action {
+        name,
+        program: resolve_program(program, source.directory()),
+        args: rest,
+        stdin: strip_bom(&raw).as_bytes().to_vec(),
+        env: io.env.as_ref(),
+        extra_env: vec![("JEV_PRESET", label.clone()), ("JEV_ACTION", name.to_owned()), ("JEV_DECISION", compact)],
+    };
+    if format == OutputFormat::Text {
+        return call::stream(action, &mut io.stdout, &io.stderr);
+    }
+    let collected = call::collect(action)?;
+    let mut result = serde_json::Map::new();
+    result.insert("status".to_owned(), Value::from(collected.status));
+    result.insert("stdout".to_owned(), Value::String(String::from_utf8_lossy(&collected.stdout).into_owned()));
+    result.insert("stderr".to_owned(), Value::String(String::from_utf8_lossy(&collected.stderr).into_owned()));
+    document.insert("result".to_owned(), Value::Object(result));
+    // The action has run, so its status stands even when stdout is closed.
+    match write_stdout(&mut io.stdout, &pretty(&Value::Object(document))?) {
+        Ok(()) | Err(Failure::BrokenPipe) => Ok(collected.status),
+        Err(failure) => Err(failure),
+    }
+}
+
+/// A relative program path with a `/` in it is relative to the preset's directory. A bare name is
+/// looked up on `PATH`.
+fn resolve_program(program: &str, directory: Option<&std::path::Path>) -> std::path::PathBuf {
+    let path = std::path::Path::new(program);
+    match directory {
+        Some(directory) if path.is_relative() && program.contains('/') => directory.join(path),
+        _ => path.to_path_buf(),
+    }
 }
 
 enum Mode<'a> {
@@ -360,6 +468,12 @@ fn load_questions(origin: &QOrigin<'_>, stdin: &mut dyn Read) -> Result<typesafe
 }
 
 fn load_state(common: &CommonArgs, stdin: &mut dyn Read, reject_terminal: bool) -> Result<State, Failure> {
+    let raw = read_state(common, stdin, reject_terminal)?;
+    interpret_state(&raw, common.state_json)
+}
+
+/// The state text as read, before it is checked.
+fn read_state(common: &CommonArgs, stdin: &mut dyn Read, reject_terminal: bool) -> Result<String, Failure> {
     if reject_terminal && implicit_stdin(common) {
         return Err(Failure::Usage(TERMINAL_STATE.into()));
     }
@@ -373,8 +487,7 @@ fn load_state(common: &CommonArgs, stdin: &mut dyn Read, reject_terminal: bool) 
             return Err(Failure::Usage("pass only one of --state and --state-file".into()));
         }
     };
-    let raw = read_origin(&origin, "state", stdin)?;
-    interpret_state(&raw, common.state_json)
+    read_origin(&origin, "state", stdin)
 }
 
 fn implicit_stdin(common: &CommonArgs) -> bool {
@@ -388,8 +501,14 @@ fn state_uses_stdin(common: &CommonArgs) -> bool {
     }
 }
 
-fn print_example(stdout: &mut impl Write, state: bool) -> Result<u8, Failure> {
-    let text = if state { format!("{EXAMPLE_STATE}\n") } else { pretty(&example_questions())? };
+fn print_example(stdout: &mut impl Write, args: &ExampleArgs) -> Result<u8, Failure> {
+    let text = if args.state {
+        format!("{EXAMPLE_STATE}\n")
+    } else if args.preset {
+        pretty(&example_preset()?)?
+    } else {
+        pretty(&example_questions())?
+    };
     write_stdout(stdout, &text)?;
     Ok(0)
 }

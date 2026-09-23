@@ -35,6 +35,11 @@ pub(crate) fn questions_from_json(text: &str) -> Result<Questions, Failure> {
     Ok(questions)
 }
 
+/// Deserialize a questions map nested in another document, with the same rule for a repeated id.
+pub(crate) fn deserialize_questions<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Questions, D::Error> {
+    deserializer.deserialize_map(QuestionMap)
+}
+
 struct QuestionMap;
 
 impl<'de> Visitor<'de> for QuestionMap {
