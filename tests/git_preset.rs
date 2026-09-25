@@ -311,8 +311,7 @@ fn worktrees_are_added_found_and_removed_by_name() {
     repo.act(&["worktree_path"], "where is the worktree").refused("the request names no worktree");
 
     repo.act(&["worktree_remove"], "remove the worktree for main").refused("that is the main worktree");
-    repo.act(&["worktree_remove"], "remove the worktrees for main and feature/login")
-        .refused("more than one worktree");
+    repo.act(&["worktree_remove"], "remove the worktrees for main and feature/login").refused("more than one worktree");
     assert!(sibling.exists());
     let removed = repo.act(&["worktree_remove"], "remove the login worktree, it is merged").ok();
     assert!(removed.stderr.contains("the branch feature/login is kept"), "{}", removed.stderr);
