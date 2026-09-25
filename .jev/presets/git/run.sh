@@ -149,13 +149,6 @@ remote_names() { remote_branches | sed -e 's|^[^/]*/||'; }
 
 current_branch() { git symbolic-ref --quiet --short HEAD || true; }
 
-# Lines of $1 that are not the current branch.
-not_current() {
-  local current
-  current=$(current_branch)
-  grep -Fxv -- "$current" <<<"$1" || true
-}
-
 # Every worktree as "path<TAB>branch", the main one first. A detached worktree has no branch.
 worktrees() {
   git worktree list --porcelain | awk '
@@ -336,14 +329,16 @@ commit() {
   local message
   message=$(quoted)
   [[ -n $message ]] || fail "put the commit message in quotes" 'commit everything as "Fix the login redirect"'
+  if [[ ${1:-} == --all ]]; then
+    run git add --all
+    run git commit --message "$message"
+    return
+  fi
   find_paths "$(unquoted)"
   if [[ ${#paths[@]} -gt 0 ]]; then
     run git add -- "${paths[@]}"
     run git commit --message "$message" -- "${paths[@]}"
     return
-  fi
-  if [[ ${1:-} == --all ]]; then
-    run git add --all
   fi
   run git commit --message "$message"
 }
@@ -373,10 +368,10 @@ unstash() {
 switch() {
   local mentions target
   mentions=$(mentioned "$(printf '%s\n%s\n' "$(local_branches)" "$(remote_names)" | sort -u)")
-  if [[ -n $mentions && $mentions == "$(current_branch)" ]]; then
+  target=$(exactly_one "branch" "$mentions" 'switch to main')
+  if [[ $target == "$(current_branch)" ]]; then
     fail "already on $mentions"
   fi
-  target=$(exactly_one "branch" "$(not_current "$mentions")" 'switch to main')
   run git switch "$target"
 }
 
@@ -394,14 +389,16 @@ create_branch() {
 
 delete_branch() {
   local target
-  target=$(exactly_one "branch" "$(not_current "$(mentioned "$(local_branches)")")" 'delete the branch fix/typo')
+  target=$(exactly_one "branch" "$(mentioned "$(local_branches)")" 'delete the branch fix/typo')
+  [[ $target != "$(current_branch)" ]] || fail "cannot delete the current branch"
   run git branch --delete "$target"
 }
 
 merge() {
   local target
-  target=$(exactly_one "branch" "$(not_current "$(mentioned "$(printf '%s\n%s\n' "$(local_branches)" "$(remote_branches)")")")" \
+  target=$(exactly_one "branch" "$(mentioned "$(printf '%s\n%s\n' "$(local_branches)" "$(remote_branches)")")" \
     'merge main into this branch')
+  [[ $target != "$(current_branch)" ]] || fail "cannot merge the current branch into itself"
   run git merge --no-edit "$target"
 }
 
@@ -473,13 +470,12 @@ worktree_path() {
 worktree_remove() {
   local named main here target branch
   named=$(named_worktrees)
+  target=$(exactly_one "worktree" "$named" 'remove the worktree for feature/login')
   main=$(worktrees | sed -n 1p | cut -f 1)
   here=$(git rev-parse --show-toplevel)
-  target=$(grep -Fxv -e "$main" -e "$here" <<<"$named" || true)
-  if [[ -z $target && -n $named ]]; then
+  if [[ $target == "$main" || $target == "$here" ]]; then
     fail "that is the main worktree or the one you are in; neither is removed"
   fi
-  target=$(exactly_one "worktree" "$target" 'remove the worktree for feature/login')
   branch=$(worktrees | awk -F '\t' -v path="$target" '$1 == path { print $2 }')
   run git worktree remove "$target"
   if [[ -n $branch ]]; then
