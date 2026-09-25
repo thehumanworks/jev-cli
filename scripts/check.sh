@@ -44,6 +44,8 @@ check_help ask ask --help
 check_help noul noul --help
 check_help choice choice --help
 check_help score score --help
+check_help decide decide --help
+check_help call call --help
 check_help example example --help
 check_help completions completions --help
 

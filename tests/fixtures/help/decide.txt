@@ -1,38 +1,23 @@
-Ask one multiple-choice question
+Decide which action a preset chooses for a state, and run nothing
 
-Usage: jev choice [OPTIONS] <INSTRUCTIONS> [OPTION]...
+Usage: jev decide [OPTIONS] <PRESET>
 
 Arguments:
-  <INSTRUCTIONS>
-          What the model should decide
-
-  [OPTION]...
-          Option as `name` or `name=description` (2 to 255; names unique and non-empty). `--` must
-          come after every flag
+  <PRESET>
+          A preset file, a name looked up in .jev/presets then ~/.config/jev/presets, or `-` for
+          stdin
 
 Options:
-      --id <ID>
-          Question id
-          
-          [default: q]
-
   -h, --help
           Print help (see a summary with '-h')
 
   -V, --version
           Print version
 
-State:
-  -s, --state <TEXT>
-          State text
-
-  -f, --state-file <PATH>
-          Read the state from a file (`-` means stdin)
-
-      --state-json
-          Parse the state as a JSON object, array or string
-
 Output:
+      --explain
+          Print every rule with its values and margins, then the answers, on stderr
+
   -o, --output <FORMAT>
           Output format
 
@@ -54,6 +39,16 @@ Output:
 
       --dry-run
           Print the request JSON and do not send it. No API key is required
+
+State:
+  -s, --state <TEXT>
+          State text
+
+  -f, --state-file <PATH>
+          Read the state from a file (`-` means stdin)
+
+      --state-json
+          Parse the state as a JSON object, array or string
 
 Connection:
       --api-key <KEY>

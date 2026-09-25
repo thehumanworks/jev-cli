@@ -3,8 +3,11 @@
 //! The binary is a thin wrapper around [`run`]. Tests and embeddings call [`run`] with in-memory
 //! pipes and, when they should not open a socket, a `typesafe_jev::Transport`.
 
+mod call;
 mod cli;
+mod decide;
 mod exit;
+mod preset;
 mod questions;
 mod render;
 mod run;

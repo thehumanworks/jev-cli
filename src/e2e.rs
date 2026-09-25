@@ -779,3 +779,353 @@ impl Write for Broken {
         }
     }
 }
+
+const CI_PRESET: &str = include_str!("../tests/fixtures/presets/ci.json");
+
+/// A flaky CI failure for the CI preset: rule 3 chooses `retry`.
+const FLAKY: &str = r#"{
+    "model": "jev-1.13.0",
+    "answers": {
+        "secrets": {"type": "noul", "noul": 0.03},
+        "kind": {
+            "type": "choice",
+            "choice": "retry",
+            "confidence": 0.84,
+            "probabilities": {"retry": 0.90, "fmt": 0.02, "issue": 0.08}
+        },
+        "scope": {
+            "type": "score",
+            "score": 0.3,
+            "confidence": 0.7,
+            "legend": {"0": "One test or one file", "1": "Several tests or modules", "2": "Most of the build"},
+            "probabilities": {"0": 0.75, "1": 0.2, "2": 0.05}
+        }
+    },
+    "usage": {"input_tokens": 900, "output_tokens": 60}
+}"#;
+
+const FLAKY_EXPLAIN: &str = "\
+decision: retry (rule 3)
+rule 1  no   secrets 0.03 at_least 0.30          margin -0.27
+rule 2  no   kind retry is issue                 margin -0.82
+             scope 0.30 at_least 1.50            margin -0.60
+rule 3  yes  kind confidence 0.84 at_least 0.60  margin +0.24
+closest call: rule 3, kind confidence (+0.24)
+
+secrets: 0.03
+kind: retry (confidence 0.84)
+  retry: 0.90
+  fmt: 0.02
+  issue: 0.08
+scope: 0.30 (confidence 0.70)
+  0 One test or one file: 0.75
+  1 Several tests or modules: 0.20
+  2 Most of the build: 0.05
+";
+
+/// A directory holding `preset.json`, which is `preset` with every action's `run` replaced by
+/// `run`, so the tests control what runs.
+struct PresetDir {
+    dir: tempfile::TempDir,
+}
+
+impl PresetDir {
+    fn new(preset: &str) -> Self {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("preset.json"), preset).unwrap();
+        Self { dir }
+    }
+
+    /// `CI_PRESET` with every action running `run`.
+    fn ci_running(run: &[&str]) -> Self {
+        let mut preset: Value = serde_json::from_str(CI_PRESET).unwrap();
+        for action in preset["actions"].as_object_mut().unwrap().values_mut() {
+            action["run"] = serde_json::json!(run);
+        }
+        Self::new(&preset.to_string())
+    }
+
+    fn preset(&self) -> String {
+        self.dir.path().join("preset.json").display().to_string()
+    }
+
+    fn script(&self, name: &str, body: &str) -> String {
+        let path = self.dir.path().join(name);
+        std::fs::write(&path, body).unwrap();
+        path.display().to_string()
+    }
+}
+
+/// The request arguments for a preset command, with a fake key and no retries.
+fn preset_args<'a>(command: &'a str, preset: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
+    let mut args =
+        vec![command, preset, "-s", "error: connection reset by peer", "--api-key", "test", "--retries", "0"];
+    args.extend_from_slice(extra);
+    args
+}
+
+#[test]
+fn decide_prints_the_action_and_json_puts_the_decision_first() {
+    let dir = PresetDir::new(CI_PRESET);
+    let preset = dir.preset();
+    let text = Run::new(&preset_args("decide", &preset, &[])).transport(ok_body(FLAKY)).go();
+    assert_eq!((text.code, text.stdout.as_str(), text.stderr.as_str()), (0, "retry\n", ""));
+
+    let json = Run::new(&preset_args("decide", &preset, &["--json"])).transport(ok_body(FLAKY)).go();
+    assert_eq!(json.code, 0, "{}", json.stderr);
+    let keys: Vec<String> =
+        serde_json::from_str::<serde_json::Map<String, Value>>(&json.stdout).unwrap().keys().cloned().collect();
+    assert_eq!(keys, ["decision", "rule", "rules", "model", "answers", "usage", "cost_usd"]);
+    let value: Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!((&value["decision"], &value["rule"]), (&serde_json::json!("retry"), &serde_json::json!(3)));
+    let matched: Vec<&Value> = value["rules"].as_array().unwrap().iter().map(|rule| &rule["matched"]).collect();
+    assert_eq!(matched, [false, false, true]);
+    let is = &value["rules"][1]["conditions"][0];
+    let keys: Vec<&String> = is.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["question", "test", "option", "value", "met", "margin"]);
+    assert_eq!(
+        (&is["test"], &is["option"], &is["value"], &is["met"]),
+        (&"is".into(), &"issue".into(), &"retry".into(), &false.into())
+    );
+    assert!((is["margin"].as_f64().unwrap() + 0.82).abs() < 1e-9, "{is}");
+    let threshold = &value["rules"][0]["conditions"][0];
+    assert_eq!(
+        (&threshold["test"], &threshold["threshold"], &threshold["value"]),
+        (&"at_least".into(), &0.3.into(), &0.03.into())
+    );
+    assert!(value["cost_usd"].is_number());
+}
+
+#[test]
+fn explain_writes_every_rule_and_the_answers_to_stderr() {
+    let dir = PresetDir::new(CI_PRESET);
+    let preset = dir.preset();
+    let out = Run::new(&preset_args("decide", &preset, &["--explain", "-v"])).transport(ok_body(FLAKY)).go();
+    assert_eq!(out.code, 0);
+    assert_eq!(out.stdout, "retry\n");
+    let verbose = "jev-1.13.0: 900 input tokens, 60 output tokens, 0 retries, ~$0.000038\n";
+    assert_eq!(out.stderr, format!("{FLAKY_EXPLAIN}{verbose}"));
+
+    let unsure = FLAKY.replace("\"confidence\": 0.84", "\"confidence\": 0.41");
+    let out = Run::new(&preset_args("decide", &preset, &["--explain"])).transport(status_body(200, unsure)).go();
+    assert_eq!(out.stdout, "escalate\n");
+    assert!(out.stderr.starts_with("decision: escalate (fallback)\n"), "{}", out.stderr);
+    assert!(out.stderr.contains("rule 3  no   kind confidence 0.41 at_least 0.60  margin -0.19\n"), "{}", out.stderr);
+    assert!(out.stderr.contains("closest call: rule 3, kind confidence (-0.19)\n"), "{}", out.stderr);
+}
+
+#[test]
+fn no_match_without_a_fallback_exits_1() {
+    let mut preset: Value = serde_json::from_str(CI_PRESET).unwrap();
+    preset.as_object_mut().unwrap().remove("fallback");
+    let dir = PresetDir::new(&preset.to_string());
+    let path = dir.preset();
+    let unsure = FLAKY.replace("\"confidence\": 0.84", "\"confidence\": 0.41");
+    let text = Run::new(&preset_args("decide", &path, &[])).transport(status_body(200, unsure.clone())).go();
+    assert_eq!((text.code, text.stdout.as_str(), text.stderr.as_str()), (1, "", ""));
+    let json = Run::new(&preset_args("decide", &path, &["--json"])).transport(status_body(200, unsure)).go();
+    assert_eq!(json.code, 1);
+    let value: Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!((&value["decision"], &value["rule"]), (&Value::Null, &Value::Null));
+}
+
+#[test]
+fn a_bad_preset_fails_before_the_state_is_read_or_a_request_is_sent() {
+    let bad = CI_PRESET.replace(r#"{ "is": "issue" }"#, r#"{ "is": "issues" }"#);
+    let dir = PresetDir::new(&bad);
+    let preset = dir.preset();
+    let mut io = Io {
+        args: ["jev", "decide", preset.as_str(), "--api-key", "test"].into_iter().map(OsString::from).collect(),
+        stdin: ExplodingStdin,
+        stdout: Vec::new(),
+        stderr: Arc::new(Mutex::new(Vec::new())),
+        stdin_is_terminal: false,
+        env: Some(BTreeMap::new()),
+    };
+    assert_eq!(run(&mut io, Some(Box::new(refuse()))), 2);
+    let stderr = String::from_utf8(io.stderr.lock().unwrap().clone()).unwrap();
+    assert_eq!(stderr, format!("jev: preset {preset}: rule 2: kind: `issues` is not an option of `kind`\n"));
+
+    let mut no_fallback: Value = serde_json::from_str(CI_PRESET).unwrap();
+    no_fallback.as_object_mut().unwrap().remove("fallback");
+    let dir = PresetDir::new(&no_fallback.to_string());
+    let preset = dir.preset();
+    let decide = Run::new(&["decide", &preset, "-s", "x", "--dry-run"]).transport(refuse()).go();
+    assert_eq!(decide.code, 0, "decide does not need a fallback: {}", decide.stderr);
+    let call = Run::new(&["call", &preset, "-s", "x", "--dry-run"]).transport(refuse()).go();
+    assert_eq!((call.code, call.stdout.as_str()), (2, ""));
+    assert_eq!(call.stderr, format!("jev: preset {preset}: call needs a fallback action\n"));
+
+    let missing = Run::new(&["decide", "/nonexistent/preset.json", "-s", "x"]).transport(refuse()).go();
+    assert_eq!(missing.code, 7);
+    assert!(
+        missing.stderr.starts_with("jev: cannot read preset from /nonexistent/preset.json: "),
+        "{}",
+        missing.stderr
+    );
+
+    let unnamed = Run::new(&["decide", "no-such-preset-name", "-s", "x"]).transport(refuse()).go();
+    assert_eq!(unnamed.code, 2);
+    assert!(
+        unnamed.stderr.starts_with("jev: no preset named `no-such-preset-name` in .jev/presets"),
+        "{}",
+        unnamed.stderr
+    );
+}
+
+#[test]
+fn a_dry_run_prints_the_preset_questions_and_needs_no_key() {
+    let dir = PresetDir::new(CI_PRESET);
+    let preset = dir.preset();
+    for command in ["decide", "call"] {
+        let out = Run::new(&[command, &preset, "-s", "a log", "--dry-run"]).transport(refuse()).go();
+        assert_eq!(out.code, 0, "{command}: {}", out.stderr);
+        let body: Value = serde_json::from_str(&out.stdout).unwrap();
+        assert_eq!(body["state"], "a log");
+        let ids: Vec<&String> = body["questions"].as_object().unwrap().keys().collect();
+        assert_eq!(ids, ["secrets", "kind", "scope"]);
+        assert_eq!(out.stderr, "");
+    }
+}
+
+#[test]
+fn the_preset_can_come_from_stdin_but_not_together_with_the_state() {
+    let out = Run::new(&["decide", "-", "-s", "log", "--api-key", "test", "--retries", "0"])
+        .stdin(CI_PRESET)
+        .transport(ok_body(FLAKY))
+        .go();
+    assert_eq!((out.code, out.stdout.as_str()), (0, "retry\n"), "{}", out.stderr);
+    let both = Run::new(&["decide", "-"]).stdin(CI_PRESET).transport(refuse()).go();
+    assert_eq!((both.code, both.stderr.as_str()), (2, "jev: state and preset cannot both be read from stdin\n"));
+    let example = Run::new(&["example", "--preset"]).go();
+    let piped = Run::new(&["call", "-", "-s", EXAMPLE_STATE, "--dry-run"]).stdin(&example.stdout).go();
+    assert_eq!(piped.code, 0, "{}", piped.stderr);
+    assert!(piped.stdout.contains("\"department\""), "{}", piped.stdout);
+}
+
+#[cfg(unix)]
+#[test]
+fn call_runs_the_action_with_the_state_on_stdin_and_returns_its_status() {
+    let script = "\
+printf 'action=%s\\n' \"$JEV_ACTION\"
+printf 'key=%s marker=%s\\n' \"${TYPESAFE_API_KEY-unset}\" \"$MARKER\"
+printf 'args=%s|%s\\n' \"$1\" \"$2\"
+printf 'stdin=' ; cat
+printf 'to stderr\\n' >&2
+exit 3
+";
+    let placeholder = PresetDir::ci_running(&["/bin/sh"]);
+    let path = placeholder.script("act.sh", script);
+    let dir = PresetDir::ci_running(&["/bin/sh", &path, "a b", "$HOME"]);
+    let preset = dir.preset();
+    let out = Run::new(&preset_args("call", &preset, &[]))
+        .env("PATH", "/usr/bin:/bin")
+        .env("MARKER", "from-env")
+        .transport(ok_body(FLAKY))
+        .go();
+    assert_eq!(out.code, 3, "{}", out.stderr);
+    assert_eq!(
+        out.stdout,
+        "action=retry\nkey=unset marker=from-env\nargs=a b|$HOME\nstdin=error: connection reset by peer"
+    );
+    assert_eq!(out.stderr, "to stderr\n");
+
+    let json = Run::new(&preset_args("call", &preset, &["--json"]))
+        .env("PATH", "/usr/bin:/bin")
+        .transport(ok_body(FLAKY))
+        .go();
+    assert_eq!(json.code, 3, "{}", json.stderr);
+    assert_eq!(json.stderr, "");
+    let value: Value = serde_json::from_str(&json.stdout).unwrap();
+    assert_eq!(value["decision"], "retry");
+    assert_eq!(value["result"]["status"], 3);
+    assert!(value["result"]["stdout"].as_str().unwrap().starts_with("action=retry\n"), "{value}");
+    assert_eq!(value["result"]["stderr"], "to stderr\n");
+    let keys: Vec<String> = value.as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys.last().map(String::as_str), Some("result"));
+}
+
+#[cfg(unix)]
+#[test]
+fn the_action_gets_the_decision_and_the_preset_in_its_environment() {
+    let placeholder = PresetDir::ci_running(&["/bin/sh"]);
+    let path = placeholder.script("env.sh", "printf '%s\\n%s' \"$JEV_PRESET\" \"$JEV_DECISION\"\n");
+    let dir = PresetDir::ci_running(&["/bin/sh", &path]);
+    let preset = dir.preset();
+    let out = Run::new(&preset_args("call", &preset, &["--explain"])).transport(ok_body(FLAKY)).go();
+    assert_eq!(out.code, 0, "{}", out.stderr);
+    let (label, decision) = out.stdout.split_once('\n').unwrap();
+    assert_eq!(label, preset);
+    let decision: Value = serde_json::from_str(decision).unwrap();
+    let decided = Run::new(&preset_args("decide", &preset, &["--json"])).transport(ok_body(FLAKY)).go();
+    let expected: Value = serde_json::from_str(&decided.stdout).unwrap();
+    assert_eq!(decision, expected, "JEV_DECISION is the `decide --json` document");
+    assert_eq!(out.stderr, FLAKY_EXPLAIN, "--explain is written before the action runs");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_relative_program_is_resolved_against_the_preset_directory() {
+    // A symlink to the system shell, not a script: a file this test had just written could still
+    // be open in another test thread's fork, and exec would fail with ETXTBSY.
+    let dir = PresetDir::ci_running(&["./bin/sh", "-c", "echo ran \"$JEV_ACTION\""]);
+    std::fs::create_dir(dir.dir.path().join("bin")).unwrap();
+    std::os::unix::fs::symlink("/bin/sh", dir.dir.path().join("bin").join("sh")).unwrap();
+    let preset = dir.preset();
+    let out = Run::new(&preset_args("call", &preset, &[])).env("PATH", "/usr/bin:/bin").transport(ok_body(FLAKY)).go();
+    assert_eq!((out.code, out.stdout.as_str(), out.stderr.as_str()), (0, "ran retry\n", ""));
+}
+
+#[cfg(unix)]
+#[test]
+fn a_signal_is_128_plus_n_and_a_missing_program_is_exit_7() {
+    let placeholder = PresetDir::ci_running(&["/bin/sh"]);
+    let path = placeholder.script("die.sh", "kill -TERM $$\n");
+    let dir = PresetDir::ci_running(&["/bin/sh", &path]);
+    let preset = dir.preset();
+    let out = Run::new(&preset_args("call", &preset, &[])).transport(ok_body(FLAKY)).go();
+    assert_eq!(out.code, 128 + 15, "{}", out.stderr);
+
+    let dir = PresetDir::ci_running(&["./missing.sh"]);
+    let preset = dir.preset();
+    let out = Run::new(&preset_args("call", &preset, &[])).transport(ok_body(FLAKY)).go();
+    assert_eq!(out.code, 7);
+    let program = dir.dir.path().join("./missing.sh");
+    assert!(
+        out.stderr.starts_with(&format!("jev: cannot run action `retry` ({}): ", program.display())),
+        "{}",
+        out.stderr
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn the_example_preset_runs_end_to_end() {
+    let example = Run::new(&["example", "--preset"]).go();
+    let dir = PresetDir::new(&example.stdout);
+    let preset = dir.preset();
+    let out = Run::new(&["call", &preset, "-s", EXAMPLE_STATE, "--api-key", "test", "--retries", "0"])
+        .env("PATH", "/usr/bin:/bin")
+        .transport(ok_body(ASK))
+        .go();
+    assert_eq!((out.code, out.stdout.as_str(), out.stderr.as_str()), (0, "technical queue\n", ""));
+}
+
+#[test]
+fn the_readme_embeds_the_example_preset_and_its_explanation() {
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md")).unwrap();
+    let after = readme.split_once("`jev example --preset` prints this preset").unwrap().1;
+    let block = after.split_once("```json\n").unwrap().1.split_once("\n```").unwrap().0;
+    let documented: Value = serde_json::from_str(block).unwrap();
+    let example = Run::new(&["example", "--preset"]).go();
+    let printed: Value = serde_json::from_str(&example.stdout).unwrap();
+    assert_eq!(documented, printed, "the README's preset is not `jev example --preset`");
+
+    let dir = PresetDir::new(&example.stdout);
+    let preset = dir.preset();
+    let explained = Run::new(&["decide", &preset, "-s", EXAMPLE_STATE, "--explain", "--api-key", "test"])
+        .transport(ok_body(ASK))
+        .go();
+    assert_eq!(explained.stdout, "technical\n");
+    assert!(readme.contains(&explained.stderr), "README is missing this explanation:\n{}", explained.stderr);
+}

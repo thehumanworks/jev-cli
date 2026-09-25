@@ -1,0 +1,34 @@
+{
+  "questions": {
+    "secrets": {
+      "type": "noul",
+      "instructions": "The log mentions a leaked, missing or rejected credential, token or secret"
+    },
+    "kind": {
+      "type": "choice",
+      "instructions": "What caused this CI failure?",
+      "criteria": {
+        "retry": "Flaky or infrastructure: a timeout, a network error, a lost runner, a rate limit",
+        "fmt": "Formatting or lint only: rustfmt or clippy output, and nothing failed to compile or test",
+        "issue": "A real compile error or test failure in the code"
+      }
+    },
+    "scope": {
+      "type": "score",
+      "instructions": "How much of the build is failing",
+      "criteria": ["One test or one file", "Several tests or modules", "Most of the build"]
+    }
+  },
+  "rules": [
+    { "when": { "secrets": { "at_least": 0.3 } }, "then": "escalate" },
+    { "when": { "kind": { "is": "issue" }, "scope": { "at_least": 1.5 } }, "then": "escalate" },
+    { "when": { "kind": { "confidence_at_least": 0.6 } }, "then": { "from": "kind" } }
+  ],
+  "fallback": "escalate",
+  "actions": {
+    "retry": { "run": ["ci/retry.sh"] },
+    "fmt": { "run": ["ci/fmt.sh"] },
+    "issue": { "run": ["ci/open-issue.sh"] },
+    "escalate": { "run": ["ci/escalate.sh"] }
+  }
+}
