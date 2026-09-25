@@ -173,8 +173,13 @@ fn a_branch_is_found_among_the_words_of_the_request() {
 
     repo.act(&["switch"], "switch branches").refused("the request names no branch");
     repo.act(&["switch"], "switch to main").refused("already on main");
+    repo.act(&["switch"], "switch from main to feature/login").refused("more than one branch");
+    assert_eq!(repo.branch(), "main");
     repo.act(&["delete_branch"], "delete fix-typo and feature/login")
         .refused("the request names more than one branch: fix-typo feature/login\n");
+    repo.act(&["delete_branch"], "delete main and fix-typo").refused("more than one branch");
+    assert!(repo.has_branch("fix-typo"));
+    repo.act(&["merge"], "merge main and feature/login").refused("more than one branch");
 
     repo.act(&["delete_branch"], "delete the merged branch fix-typo").ok();
     assert!(!repo.has_branch("fix-typo"));
@@ -210,6 +215,10 @@ fn a_commit_takes_its_message_from_quotes_and_never_guesses_one() {
     repo.act(&["commit", "--all"], "commit all my work as “Add new”").ok();
     assert_eq!(repo.git(&["log", "-1", "--format=%s"]), "Add new");
     assert_eq!(repo.git(&["status", "--porcelain"]), "", "--all took the untracked file too");
+    repo.write("a.txt", "a\nagain\n");
+    repo.write("new.txt", "new\nagain\n");
+    repo.act(&["commit", "--all"], "commit all including a.txt as 'Both files'").ok();
+    assert_eq!(repo.git(&["show", "--name-only", "--format=", "HEAD"]), "a.txt\nnew.txt");
 }
 
 #[test]
@@ -302,6 +311,9 @@ fn worktrees_are_added_found_and_removed_by_name() {
     repo.act(&["worktree_path"], "where is the worktree").refused("the request names no worktree");
 
     repo.act(&["worktree_remove"], "remove the worktree for main").refused("that is the main worktree");
+    repo.act(&["worktree_remove"], "remove the worktrees for main and feature/login")
+        .refused("more than one worktree");
+    assert!(sibling.exists());
     let removed = repo.act(&["worktree_remove"], "remove the login worktree, it is merged").ok();
     assert!(removed.stderr.contains("the branch feature/login is kept"), "{}", removed.stderr);
     assert!(!sibling.exists());
